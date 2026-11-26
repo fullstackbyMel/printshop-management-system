@@ -4,7 +4,7 @@ from django.db import models
 
 class Category(models.Model):
     """Group of services: Photocopy, Printing, Scanning, ID Package..."""
-    name = models.CharField(max_length=60, unique=True)
+    name = models.CharField(max_length=100)
 
     class Meta:
         ordering = ["name"]
@@ -22,6 +22,11 @@ class Service(models.Model):
     price = models.DecimalField(max_digits=10, decimal_places=2)  # default selling price per unit
     cost = models.DecimalField(max_digits=10, decimal_places=2, default=0)  # your cost per unit
     is_active = models.BooleanField(default=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["category", "name"], name="unique_name_per_category"),
+        ]
 
     def __str__(self):
         return self.name

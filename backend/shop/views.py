@@ -1,5 +1,7 @@
+from datetime import datetime, timedelta
 from django.contrib.auth import authenticate
 from django.db.models import Count, DecimalField, ExpressionWrapper, F, Sum
+from django.utils import timezone
 from rest_framework import permissions, serializers, viewsets
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import api_view, permission_classes
@@ -112,22 +114,27 @@ def login(request):
 @api_view(["GET"])
 @permission_classes([permissions.IsAuthenticated])
 def report(request):
-    """Admin only. ?start=YYYY-MM-DD&end=YYYY-MM-DD (both optional)."""
+    """Admin only. ?start=YYYY-MM-DD&end=YYYY-MM-DD (both optional, end day included)."""
     if not request.user.is_staff:
         return Response({"detail": "Admin only."}, status=403)
     qs = Sale.objects.all()
-    if request.GET.get("start"):
-        qs = qs.filter(created_at__date__gte=request.GET["start"])
-    if request.GET.get("end"):
-        qs = qs.filter(created_at__date__lte=request.GET["end"])
+    try:
+        if request.GET.get("start"):
+            qs = qs.filter(created_at__gte=timezone.make_aware(datetime.strptime(request.GET["start"], "%Y-%m-%d")))
+        if request.GET.get("end"):
+            end = datetime.strptime(request.GET["end"], "%Y-%m-%d") + timedelta(days=1)
+            qs = qs.filter(created_at__lt=timezone.make_aware(end))
+    except ValueError:
+        return Response({"detail": "Invalid date."}, status=400)
     money = DecimalField(max_digits=14, decimal_places=2)
     rows = (qs.values("service__name", "service__category__name")
-              .annotate(orders=Count("id"), quantity=Sum("quantity"),
+              .annotate(orders=Count("id"), qty=Sum("quantity"),
                         revenue=Sum(ExpressionWrapper(F("unit_price") * F("quantity"), output_field=money)),
                         cost=Sum(ExpressionWrapper(F("unit_cost") * F("quantity"), output_field=money)))
               .order_by("service__name"))
-    out = [{"service": r["service__name"], "category": r["service__category__name"], "orders": r["orders"], "quantity": r["quantity"],
-            "revenue": r["revenue"], "cost": r["cost"], "profit": r["revenue"] - r["cost"]} for r in rows]
+    out = [{"service": r["service__name"], "category": r["service__category__name"],
+            "orders": r["orders"], "quantity": r["qty"], "revenue": r["revenue"], "cost": r["cost"],
+            "profit": r["revenue"] - r["cost"]} for r in rows]
     out.sort(key=lambda r: r["profit"], reverse=True)
     totals = {k: sum(r[k] for r in out) for k in ("orders", "quantity", "revenue", "cost", "profit")}
     return Response({"rows": out, "totals": totals})
