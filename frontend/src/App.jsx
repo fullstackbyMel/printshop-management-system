@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { Fragment, useState, useEffect, useCallback } from "react";
 
 const API = import.meta.env.VITE_API || "http://localhost:8000/api";
 const peso = (n) =>
@@ -50,7 +50,7 @@ function Login({ onDone }) {
 
 function Shell({ auth, onLogout }) {
   const [tab, setTab] = useState("sales");
-  const tabs = auth.is_admin ? [["sales", "Record a sale"], ["report", "Profit"], ["services", "Services"]] : [["sales", "Record a sale"]];
+  const tabs = auth.is_admin ? [["sales", "Record a sale"], ["report", "Profit"], ["services", "Categories & prices"]] : [["sales", "Record a sale"]];
   return (
     <div className="shell">
       <header>
@@ -67,14 +67,17 @@ function Shell({ auth, onLogout }) {
 
 function Sales({ auth }) {
   const [services, setServices] = useState([]);
+  const [cats, setCats] = useState([]);
+  const [cat, setCat] = useState("");
   const [sales, setSales] = useState([]);
   const [f, setF] = useState({ service: "", quantity: 1, unit_price: "", customer: "" });
   const [msg, setMsg] = useState("");
   const load = useCallback(async () => {
-    const [s, r] = await Promise.all([api("/services/", { token: auth.token }), api("/sales/", { token: auth.token })]);
-    setServices(s.filter((x) => x.is_active)); setSales(r);
+    const [s, r, c] = await Promise.all([api("/services/", { token: auth.token }), api("/sales/", { token: auth.token }), api("/categories/", { token: auth.token })]);
+    setServices(s.filter((x) => x.is_active)); setSales(r); setCats(c);
   }, [auth.token]);
   useEffect(() => { load(); }, [load]);
+  const shown = services.filter((s) => String(s.category) === cat);
 
   const pick = (id) => {
     const s = services.find((x) => String(x.id) === id);
@@ -95,10 +98,16 @@ function Sales({ auth }) {
     <section className="two">
       <form onSubmit={submit} className="panel">
         <h2>Record a sale</h2>
-        <label>Service
-          <select required value={f.service} onChange={(e) => pick(e.target.value)}>
-            <option value="">Choose a service</option>
-            {services.map((s) => <option key={s.id} value={s.id}>{s.name} ({peso(s.price)} / {s.unit})</option>)}
+        <label>Category
+          <select required value={cat} onChange={(e) => { setCat(e.target.value); setF({ ...f, service: "", unit_price: "" }); }}>
+            <option value="">Choose a category</option>
+            {cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </label>
+        <label>Sub-category
+          <select required disabled={!cat} value={f.service} onChange={(e) => pick(e.target.value)}>
+            <option value="">{cat ? "Choose a sub-category" : "Choose a category first"}</option>
+            {shown.map((s) => <option key={s.id} value={s.id}>{s.name} ({peso(s.price)} / {s.unit})</option>)}
           </select>
         </label>
         <div className="row">
@@ -113,11 +122,11 @@ function Sales({ auth }) {
       <div className="panel">
         <h2>{auth.is_admin ? "Latest sales" : "Your latest sales"}</h2>
         {sales.length === 0 ? <p className="muted">No sales yet. Record the first one on the left.</p> : (
-          <table><thead><tr><th>When</th><th>Service</th><th>Qty</th><th className="r">Paid</th>{auth.is_admin && <><th>By</th><th /></>}</tr></thead>
+          <table><thead><tr><th>When</th><th>Item</th><th className="r">Paid</th>{auth.is_admin && <><th>By</th><th /></>}</tr></thead>
             <tbody>{sales.slice(0, 30).map((s) => (
               <tr key={s.id}>
                 <td>{new Date(s.created_at).toLocaleString("en-PH", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</td>
-                <td>{s.service_name}{s.customer && <small> · {s.customer}</small>}</td><td>{s.quantity}</td><td className="r">{peso(s.total)}</td>
+                <td>{s.category_name ? s.category_name + " · " : ""}{s.service_name}{s.customer && <small> · {s.customer}</small>}</td><td>{s.quantity}</td><td className="r">{peso(s.total)}</td>
                 {auth.is_admin && <><td>{s.handled_by_name}</td><td><button className="link" onClick={() => del(s.id)}>Delete</button></td></>}
               </tr>))}</tbody></table>
         )}
@@ -134,6 +143,15 @@ function Report({ auth }) {
     api("/report/" + (q ? "?" + q : ""), { token: auth.token }).then(setData);
   }, [range, auth.token]);
   useEffect(() => { load(); }, [load]);
+  const groups = data
+    ? Object.values(data.rows.reduce((a, r) => {
+        const k = r.category || "No category";
+        a[k] = a[k] || { name: k, rows: [], orders: 0, quantity: 0, revenue: 0, cost: 0, profit: 0 };
+        a[k].rows.push(r);
+        ["orders", "quantity", "revenue", "cost", "profit"].forEach((m) => { a[k][m] += Number(r[m]); });
+        return a;
+      }, {})).sort((x, y) => y.profit - x.profit)
+    : [];
   const max = data ? Math.max(1, ...data.rows.map((r) => Number(r.revenue))) : 1;
   const t = data?.totals;
   return (
@@ -155,11 +173,16 @@ function Report({ auth }) {
       )}
       {data && data.rows.length === 0 && <p className="muted">No sales in this period.</p>}
       {data && data.rows.length > 0 && (
-        <table><thead><tr><th>Service</th><th className="r">Orders</th><th className="r">Qty</th><th className="r">Sales</th><th className="r">Cost</th><th className="r">Profit</th><th /></tr></thead>
-          <tbody>{data.rows.map((r) => (
-            <tr key={r.service}><td>{r.service}</td><td className="r">{r.orders}</td><td className="r">{r.quantity}</td>
-              <td className="r">{peso(r.revenue)}</td><td className="r">{peso(r.cost)}</td><td className="r"><b>{peso(r.profit)}</b></td>
-              <td className="bar"><span style={{ width: `${(Number(r.revenue) / max) * 100}%` }}><em style={{ width: `${Math.max(0, (Number(r.profit) / Math.max(1, Number(r.revenue))) * 100)}%` }} /></span></td></tr>))}</tbody></table>
+        <table><thead><tr><th>Category / sub-category</th><th className="r">Orders</th><th className="r">Qty</th><th className="r">Sales</th><th className="r">Cost</th><th className="r">Profit</th><th /></tr></thead>
+          <tbody>{groups.map((g) => (
+            <Fragment key={g.name}>
+              <tr className="grp"><td>{g.name}</td><td className="r">{g.orders}</td><td className="r">{g.quantity}</td>
+                <td className="r">{peso(g.revenue)}</td><td className="r">{peso(g.cost)}</td><td className="r">{peso(g.profit)}</td><td /></tr>
+              {g.rows.map((r) => (
+                <tr key={r.service}><td className="ind">{r.service}</td><td className="r">{r.orders}</td><td className="r">{r.quantity}</td>
+                  <td className="r">{peso(r.revenue)}</td><td className="r">{peso(r.cost)}</td><td className="r">{peso(r.profit)}</td>
+                  <td className="bar"><span style={{ width: `${(Number(r.revenue) / max) * 100}%` }}><em style={{ width: `${Math.max(0, (Number(r.profit) / Math.max(1, Number(r.revenue))) * 100)}%` }} /></span></td></tr>))}
+            </Fragment>))}</tbody></table>
       )}
       <p className="muted">Bar = sales; the magenta part is profit.</p>
     </section>
@@ -167,46 +190,92 @@ function Report({ auth }) {
 }
 
 function Services({ auth }) {
+  const blank = { category: "", newCategory: "", name: "", unit: "piece", price: "", cost: "" };
   const [list, setList] = useState([]);
-  const [n, setN] = useState({ name: "", unit: "piece", price: "", cost: "" });
+  const [cats, setCats] = useState([]);
+  const [n, setN] = useState(blank);
   const [err, setErr] = useState("");
-  const load = useCallback(() => api("/services/", { token: auth.token }).then(setList), [auth.token]);
+  const load = useCallback(async () => {
+    const [s, c] = await Promise.all([api("/services/", { token: auth.token }), api("/categories/", { token: auth.token })]);
+    setList(s); setCats(c);
+  }, [auth.token]);
   useEffect(() => { load(); }, [load]);
   const add = async (e) => {
     e.preventDefault(); setErr("");
-    try { await api("/services/", { method: "POST", token: auth.token, body: n }); setN({ name: "", unit: "piece", price: "", cost: "" }); load(); }
-    catch (x) { setErr(x.message); }
+    try {
+      let category = n.category;
+      if (category === "new") {
+        category = (await api("/categories/", { method: "POST", token: auth.token, body: { name: n.newCategory } })).id;
+      }
+      await api("/services/", { method: "POST", token: auth.token, body: { name: n.name, unit: n.unit, price: n.price, cost: n.cost, category: Number(category) } });
+      setN({ ...blank, category: String(category) });  // stay on the same category to add the next one
+      load();
+    } catch (x) { setErr(x.message); }
   };
+  const groups = [...cats.map((c) => ({ c, items: list.filter((s) => s.category === c.id) })),
+                  { c: null, items: list.filter((s) => !s.category) }].filter((g) => g.c || g.items.length);
   return (
     <section className="two">
       <form onSubmit={add} className="panel">
-        <h2>Add a new service</h2>
-        <label>Name<input required placeholder="e.g. Tarpaulin printing" value={n.name} onChange={(e) => setN({ ...n, name: e.target.value })} /></label>
+        <h2>Add a category or sub-category</h2>
+        <label>Category
+          <select required value={n.category} onChange={(e) => setN({ ...n, category: e.target.value })}>
+            <option value="">Choose a category</option>
+            {cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            <option value="new">+ New category</option>
+          </select>
+        </label>
+        {n.category === "new" && <label>New category name<input required autoFocus placeholder="e.g. Tarpaulin" value={n.newCategory} onChange={(e) => setN({ ...n, newCategory: e.target.value })} /></label>}
+        <label>Sub-category<input required placeholder="e.g. 2x3 ft" value={n.name} onChange={(e) => setN({ ...n, name: e.target.value })} /></label>
         <label>Sold per<input required placeholder="page, piece, sq ft" value={n.unit} onChange={(e) => setN({ ...n, unit: e.target.value })} /></label>
         <div className="row">
-          <label>Selling price<input type="number" step="0.01" required value={n.price} onChange={(e) => setN({ ...n, price: e.target.value })} /></label>
-          <label>Your cost<input type="number" step="0.01" required value={n.cost} onChange={(e) => setN({ ...n, cost: e.target.value })} /></label>
+          <label>Selling price<input type="number" step="0.01" min="0" required value={n.price} onChange={(e) => setN({ ...n, price: e.target.value })} /></label>
+          <label>Your cost<input type="number" step="0.01" min="0" required value={n.cost} onChange={(e) => setN({ ...n, cost: e.target.value })} /></label>
         </div>
         {err && <p className="err">{err}</p>}
-        <button className="primary">Add service</button>
+        <button className="primary">Save</button>
       </form>
       <div className="panel">
-        <h2>Your services</h2>
-        {list.map((s) => <ServiceRow key={s.id} s={s} token={auth.token} onSaved={load} />)}
+        <h2>Categories and prices</h2>
+        <p className="muted">The in-charge picks a category, then one of its sub-categories. Set your cost on each one so profit is correct.</p>
+        {groups.map((g) => (
+          <div key={g.c ? g.c.id : "none"}>
+            {g.c ? <CategoryHead c={g.c} token={auth.token} onSaved={load} /> : <h3>No category (assign one below)</h3>}
+            {g.items.length === 0 && <p className="muted">No sub-categories yet. Add one on the left.</p>}
+            {g.items.map((s) => <ServiceRow key={s.id} s={s} cats={cats} token={auth.token} onSaved={load} />)}
+          </div>
+        ))}
       </div>
     </section>
   );
 }
 
-function ServiceRow({ s, token, onSaved }) {
-  const [v, setV] = useState({ price: s.price, cost: s.cost });
+function CategoryHead({ c, token, onSaved }) {
+  const [name, setName] = useState(c.name);
+  const rename = () => api(`/categories/${c.id}/`, { method: "PATCH", token, body: { name } }).then(onSaved);
+  return (
+    <div className="cathead">
+      <input value={name} onChange={(e) => setName(e.target.value)} aria-label="Category name" />
+      <button disabled={!name.trim() || name === c.name} onClick={rename}>Rename</button>
+    </div>
+  );
+}
+
+function ServiceRow({ s, cats, token, onSaved }) {
+  const [v, setV] = useState({ name: s.name, price: s.price, cost: s.cost, category: s.category ?? "" });
   const patch = (body) => api(`/services/${s.id}/`, { method: "PATCH", token, body }).then(onSaved);
   return (
     <div className={"svc" + (s.is_active ? "" : " off")}>
-      <b>{s.name}</b><small>per {s.unit}</small>
-      <label>Price<input type="number" step="0.01" value={v.price} onChange={(e) => setV({ ...v, price: e.target.value })} /></label>
+      <label>Sub-category<input value={v.name} onChange={(e) => setV({ ...v, name: e.target.value })} /></label>
+      <label>Price / {s.unit}<input type="number" step="0.01" value={v.price} onChange={(e) => setV({ ...v, price: e.target.value })} /></label>
       <label>Cost<input type="number" step="0.01" value={v.cost} onChange={(e) => setV({ ...v, cost: e.target.value })} /></label>
-      <button onClick={() => patch(v)}>Save</button>
+      <label>Category
+        <select value={v.category} onChange={(e) => setV({ ...v, category: e.target.value })}>
+          <option value="">None</option>
+          {cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+      </label>
+      <button onClick={() => patch({ ...v, category: v.category ? Number(v.category) : null })}>Save</button>
       <button className="link" onClick={() => patch({ is_active: !s.is_active })}>{s.is_active ? "Hide" : "Show again"}</button>
     </div>
   );
@@ -216,8 +285,8 @@ const css = `
 @import url('https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&display=swap');
 :root{--ink:#14213d;--paper:#f2f5f9;--line:#d5dce6;--c:#00a6d6;--m:#d6246e;--y:#f5c400;--mut:#5d6b82}
 *{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.5 'Instrument Sans',system-ui,sans-serif}
-label{display:flex;flex-direction:column;gap:4px;font-weight:500;font-size:13px;margin-bottom:12px;flex:1}
-input,select{font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--ink)}
+label{display:flex;flex-direction:column;gap:4px;font-weight:500;font-size:13px;margin-bottom:12px;flex:1;min-width:0}
+input,select{width:100%;min-width:0;font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--ink)}
 input:focus,select:focus,button:focus-visible{outline:2px solid var(--c);outline-offset:1px}
 button{font:inherit;cursor:pointer;border:1px solid var(--line);background:#fff;border-radius:6px;padding:8px 14px;color:var(--ink)}
 .primary{background:var(--ink);color:#fff;border-color:var(--ink);padding:11px 18px;font-weight:600;width:100%}
@@ -236,7 +305,11 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:9px 8px;
 .strip div{padding:12px 16px;border-right:1px solid var(--line);display:flex;flex-direction:column}.strip div:last-child{border:0}.strip b{font-size:20px}
 .strip .profit{background:var(--ink);color:#fff;border-radius:0 8px 8px 0}.strip .profit small{color:#c9d3e4}
 .bar{width:22%}.bar span{display:block;height:10px;background:var(--c);border-radius:2px;overflow:hidden}.bar em{display:block;height:100%;background:var(--m)}
-.svc{display:grid;grid-template-columns:1fr 90px 90px auto auto;gap:8px;align-items:end;padding:12px 0;border-bottom:1px solid var(--line)}
-.svc small{grid-column:1;margin-top:-26px}.svc label{margin:0}.svc.off{opacity:.5}
-@media(max-width:600px){.svc{grid-template-columns:1fr 1fr}.strip{grid-template-columns:1fr 1fr}}
+.svc{display:grid;grid-template-columns:1.5fr 90px 90px 140px auto auto;gap:8px;align-items:end;padding:12px 0;border-bottom:1px solid var(--line)}
+.svc label{margin:0}.svc.off{opacity:.5}
+@media(max-width:600px){.svc{grid-template-columns:1fr 1fr}.svc>label:first-child{grid-column:1/-1}.strip{grid-template-columns:1fr 1fr}}
+.cathead{display:flex;gap:8px;margin-top:18px;align-items:center}.cathead input{font-weight:700;border:0;border-bottom:2px solid var(--ink);border-radius:0;padding:4px 0;background:none}
+.stack{display:grid;gap:24px;align-self:start}.row button{align-self:flex-start;white-space:nowrap}
+h3{margin:18px 0 0;font-size:14px;padding-bottom:4px;border-bottom:2px solid var(--ink)}
+.grp td{background:var(--paper);font-weight:700}.ind{padding-left:20px}
 `;

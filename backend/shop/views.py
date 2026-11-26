@@ -5,9 +5,9 @@ from rest_framework.authtoken.models import Token
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 
-from .models import Sale, Service
+from .models import Category, Sale, Service
 
-# Create your views here.
+
 class IsAdminOrReadOnly(permissions.BasePermission):
     def has_permission(self, request, view):
         if request.method in permissions.SAFE_METHODS:
@@ -15,27 +15,37 @@ class IsAdminOrReadOnly(permissions.BasePermission):
         return request.user.is_authenticated and request.user.is_staff
 
 
+class CategorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Category
+        fields = ["id", "name"]
+
+
 class ServiceSerializer(serializers.ModelSerializer):
+    category_name = serializers.CharField(source="category.name", read_only=True, default=None)
+
     class Meta:
         model = Service
-        fields = ["id", "name", "unit", "price", "cost", "is_active"]
+        fields = ["id", "name", "category", "category_name", "unit", "price", "cost", "is_active"]
+        extra_kwargs = {"category": {"required": True, "allow_null": False}}
 
     def to_representation(self, obj):
         data = super().to_representation(obj)
         if not self.context["request"].user.is_staff:
-            data.pop("cost")  
+            data.pop("cost")  # in-charge staff never see your costs
         return data
 
 
 class SaleSerializer(serializers.ModelSerializer):
     service_name = serializers.CharField(source="service.name", read_only=True)
+    category_name = serializers.CharField(source="service.category.name", read_only=True, default=None)
     handled_by_name = serializers.CharField(source="handled_by.username", read_only=True)
     total = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
     unit_price = serializers.DecimalField(max_digits=10, decimal_places=2, required=False)
 
     class Meta:
         model = Sale
-        fields = ["id", "service", "service_name", "quantity", "unit_price", "total",
+        fields = ["id", "service", "service_name", "category_name", "quantity", "unit_price", "total",
                   "customer", "handled_by_name", "created_at"]
 
     def validate_service(self, s):
@@ -51,6 +61,13 @@ class SaleSerializer(serializers.ModelSerializer):
         return super().create(validated)
 
 
+class CategoryViewSet(viewsets.ModelViewSet):
+    queryset = Category.objects.all()
+    serializer_class = CategorySerializer
+    permission_classes = [IsAdminOrReadOnly]
+    http_method_names = ["get", "post", "patch"]
+
+
 class ServiceViewSet(viewsets.ModelViewSet):
     serializer_class = ServiceSerializer
     permission_classes = [IsAdminOrReadOnly]
@@ -60,7 +77,7 @@ class ServiceViewSet(viewsets.ModelViewSet):
         return qs if self.request.user.is_staff else qs.filter(is_active=True)
 
     def perform_destroy(self, instance):
-        instance.is_active = False 
+        instance.is_active = False  # keep history; just hide it
         instance.save()
 
 
@@ -95,6 +112,7 @@ def login(request):
 @api_view(["GET"])
 @permission_classes([permissions.IsAuthenticated])
 def report(request):
+    """Admin only. ?start=YYYY-MM-DD&end=YYYY-MM-DD (both optional)."""
     if not request.user.is_staff:
         return Response({"detail": "Admin only."}, status=403)
     qs = Sale.objects.all()
@@ -103,12 +121,12 @@ def report(request):
     if request.GET.get("end"):
         qs = qs.filter(created_at__date__lte=request.GET["end"])
     money = DecimalField(max_digits=14, decimal_places=2)
-    rows = (qs.values("service__name")
+    rows = (qs.values("service__name", "service__category__name")
               .annotate(orders=Count("id"), quantity=Sum("quantity"),
                         revenue=Sum(ExpressionWrapper(F("unit_price") * F("quantity"), output_field=money)),
                         cost=Sum(ExpressionWrapper(F("unit_cost") * F("quantity"), output_field=money)))
               .order_by("service__name"))
-    out = [{"service": r["service__name"], "orders": r["orders"], "quantity": r["quantity"],
+    out = [{"service": r["service__name"], "category": r["service__category__name"], "orders": r["orders"], "quantity": r["quantity"],
             "revenue": r["revenue"], "cost": r["cost"], "profit": r["revenue"] - r["cost"]} for r in rows]
     out.sort(key=lambda r: r["profit"], reverse=True)
     totals = {k: sum(r[k] for r in out) for k in ("orders", "quantity", "revenue", "cost", "profit")}
